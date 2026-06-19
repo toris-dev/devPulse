@@ -1,0 +1,22 @@
+name: devpulse-instagram
+
+services:
+  instagram-poster:
+    build:
+      context: ../services/instagram-poster
+      dockerfile: Dockerfile
+    env_file:
+      - .env.instagram
+    environment:
+      IG_OUTPUT_DIR: /data/output
+      IG_SNS_DIR: /data/output/sns
+      IG_STATE_DB: /data/instagram/state.db
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      # devPulse 파이프라인 output 마운트 (읽기 전용)
+      - ../output:/data/output:ro
+      - instagram_poster_state:/data/instagram
+    restart: unless-stopped
+
+volumes:
+  instagram_poster_state:

@@ -1,0 +1,29 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.DS_Store
+
+# Virtual environments
+.venv/
+venv/
+path/to/
+
+# Secrets & local env (examples are tracked)
+**/.env
+**/.env.instagram
+!**/.env.example
+!**/.env.instagram.example
+
+# Crawled / generated artifacts
+output/
+services/instagram-poster/output/
+*.db
+nohup.out
+
+# Dagster local state
+.dagster/
+
+# Editor / tooling
+opencode.json
