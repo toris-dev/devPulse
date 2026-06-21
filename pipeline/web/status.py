@@ -11,6 +11,7 @@ from pipeline.processors.card_news import card_path_for_post
 from pipeline.lib import db
 from pipeline.lib.env import load_env
 from pipeline.lib.progress import get_tracker
+from pipeline.web.instagram import get_instagram_dashboard_info, merge_instagram_status
 
 
 def _root() -> Path:
@@ -293,6 +294,8 @@ def build_dashboard_payload() -> dict[str, Any]:
 
     cards = _scan_cards(out)
     published = _scan_published_bundles(out)
+    instagram = get_instagram_dashboard_info()
+    merge_instagram_status(published["items"], instagram)
     bundle_size = int(__import__("os").getenv("BUNDLE_SIZE", "6"))
     bundle_progress = _fetch_bundle_progress(out, bundle_size)
     card_pending = bundle_progress["current"]
@@ -334,6 +337,12 @@ def build_dashboard_payload() -> dict[str, Any]:
         "logs": {
             "tail": _read_daemon_log(out),
             "log_file": "output/daemon.log",
+        },
+        "instagram": {
+            "configured": instagram["configured"],
+            "dry_run": instagram["dry_run"],
+            "reels_per_day": instagram["reels_per_day"],
+            "today_count": instagram["today_count"],
         },
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }

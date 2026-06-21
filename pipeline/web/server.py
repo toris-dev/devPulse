@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from pipeline.lib.env import load_env
+from pipeline.web.instagram import post_bundle_to_instagram
 from pipeline.web.status import build_dashboard_payload
 from pipeline.web.stream import sse_stream
 
@@ -184,6 +185,25 @@ def _html_page() -> str:
     }
     .badge.ok { color:var(--ok); border-color:var(--ok); background:rgba(0,255,157,.1); }
     .badge.warn { color:var(--warn); border-color:var(--warn); background:rgba(255,176,32,.1); }
+    .badge.err { color:var(--err); border-color:var(--err); background:rgba(255,68,102,.12); }
+    .badge.ig { color:var(--cyan); border-color:var(--cyan); background:rgba(0,229,255,.08); }
+
+    .ig-row {
+      display:flex; flex-wrap:wrap; align-items:center; gap:6px;
+      margin-top:8px; padding-top:6px; border-top:1px dashed rgba(0,229,255,.15);
+    }
+    .btn-ig {
+      font-family:inherit; font-size:.58rem; letter-spacing:.1em;
+      padding:4px 10px; cursor:pointer;
+      color:var(--magenta); background:rgba(255,42,122,.12);
+      border:1px solid var(--magenta);
+    }
+    .btn-ig:hover:not(:disabled) {
+      color:#fff; background:rgba(255,42,122,.35); box-shadow:0 0 8px rgba(255,42,122,.4);
+    }
+    .btn-ig:disabled { opacity:.45; cursor:not-allowed; }
+    .btn-ig.posting { color:var(--warn); border-color:var(--warn); }
+    .ig-meta { font-size:.58rem; color:var(--muted); }
 
     .card-strip {
       display:flex; gap:8px; overflow-x:auto; padding-bottom:4px;
@@ -277,6 +297,75 @@ def _html_page() -> str:
   <script>
     function esc(s){const d=document.createElement('div');d.textContent=s??'';return d.innerHTML;}
 
+    const igPosting = new Set();
+
+    function igStatusBadge(ig){
+      if (!ig) return '<span class="badge warn">IG PENDING</span>';
+      if (ig.status === 'posted') {
+        const id = ig.ig_media_id ? ` · ${esc(String(ig.ig_media_id).slice(0, 12))}` : '';
+        return `<span class="badge ok">✓ IG POSTED${id}</span>`;
+      }
+      if (ig.status === 'failed') {
+        const err = ig.error ? ` title="${esc(ig.error)}"` : '';
+        return `<span class="badge err"${err}>IG FAILED</span>`;
+      }
+      return '<span class="badge warn">IG PENDING</span>';
+    }
+
+    function igControlsHtml(b, igCfg){
+      const ig = b.ig || { status: 'pending' };
+      const posted = ig.status === 'posted';
+      const posting = igPosting.has(b.bundle_id);
+      const configured = !!(igCfg && igCfg.configured);
+      const dryRun = !!(igCfg && igCfg.dry_run);
+
+      let btn = '';
+      if (!posted && configured) {
+        btn = `<button type="button" class="btn-ig${posting ? ' posting' : ''}"
+          data-ig-post="${esc(b.bundle_id)}" ${posting ? 'disabled' : ''}>
+          ${posting ? 'UPLOADING…' : dryRun ? 'IG DRY RUN' : 'POST TO IG'}</button>`;
+      } else if (!configured) {
+        btn = '<span class="ig-meta">IG 미설정 — infra/.env.instagram</span>';
+      }
+
+      const when = ig.posted_at ? `<span class="ig-meta">${esc(ig.posted_at)}</span>` : '';
+      return `<div class="ig-row">${igStatusBadge(ig)}${btn}${when}</div>`;
+    }
+
+    async function postToInstagram(bundleId, btn){
+      if (igPosting.has(bundleId)) return;
+      igPosting.add(bundleId);
+      if (btn) {
+        btn.disabled = true;
+        btn.classList.add('posting');
+        btn.textContent = 'UPLOADING…';
+      }
+      try {
+        const res = await fetch('/api/instagram/post', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bundle_id: bundleId }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok && !data.ok) {
+          alert(data.error || `업로드 실패 (HTTP ${res.status})`);
+        } else if (data.status === 'failed') {
+          alert(data.error || '업로드 실패');
+        }
+        await refreshOnce();
+      } catch (err) {
+        alert(err?.message || String(err));
+      } finally {
+        igPosting.delete(bundleId);
+      }
+    }
+
+    document.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('[data-ig-post]');
+      if (!btn || btn.disabled) return;
+      postToInstagram(btn.dataset.igPost, btn);
+    });
+
     function renderCards(items){
       const el = document.getElementById('panel-cards');
       if (!items.length) {
@@ -313,7 +402,7 @@ def _html_page() -> str:
       list.prepend(frag);
     }
 
-    function bundleItemInner(b){
+    function bundleItemInner(b, igCfg){
       return `
           <div class="bundle-headline">
             <strong>${esc(b.bundle_id)}</strong>
@@ -327,10 +416,11 @@ def _html_page() -> str:
             ${b.video_url ? `<a href="${b.video_url}" download>DL.MP4</a>` : ''}
             ${b.caption_url ? `<a href="${b.caption_url}" target="_blank">TXT</a>` : ''}
             ${b.json_url ? `<a href="${b.json_url}" target="_blank">JSON</a>` : ''}
-          </div>`;
+          </div>
+          ${igControlsHtml(b, igCfg)}`;
     }
 
-    function renderBundles(items, counts){
+    function renderBundles(items, counts, igCfg){
       const el = document.getElementById('panel-bundles');
       if (!items.length) {
         if (!el.querySelector('.bundle-list')) {
@@ -379,7 +469,7 @@ def _html_page() -> str:
         const item = document.createElement('div');
         item.className = 'artifact-item';
         item.dataset.bundleId = b.bundle_id;
-        item.innerHTML = bundleItemInner(b);
+        item.innerHTML = bundleItemInner(b, igCfg);
         frag.appendChild(item);
       }
       list.prepend(frag);
@@ -397,6 +487,13 @@ def _html_page() -> str:
         }
         const cap = node.querySelector('.caption-box');
         if (cap) cap.textContent = b.caption || '(NO CAPTION)';
+        let igRow = node.querySelector('.ig-row');
+        const igHtml = igControlsHtml(b, igCfg);
+        if (igRow) {
+          igRow.outerHTML = igHtml;
+        } else {
+          node.insertAdjacentHTML('beforeend', igHtml);
+        }
       }
     }
 
@@ -481,15 +578,20 @@ def _html_page() -> str:
         `${(p.daemon_status || 'OFFLINE').toUpperCase()} · CYCLE ${p.run_number||0} · ${p.phase||'-'} / ${p.step||'-'} · ${data.generated_at||''}`;
 
       const bundle = data.bundle || {};
+      const ig = data.instagram || {};
       const bundleStat = (ac.bundles_raw ?? ac.bundles ?? 0) > (ac.bundles ?? 0)
         ? `${ac.bundles ?? 0}/${ac.bundles_raw}`
         : String(ac.bundles ?? 0);
       const failed = counts.failed ?? 0;
+      const igStat = ig.configured
+        ? `${ig.today_count ?? 0}/${ig.reels_per_day ?? 0}${ig.dry_run ? ' DRY' : ''}`
+        : 'OFF';
       const stats = [
         ['QUEUE', db.bundle_pending || '-', ''],
         ['PROGRESS', `${bundle.percent ?? 0}%`, bundle.ready ? 'ok' : 'warn'],
         ['CARDS', ac.cards ?? '-', ''],
         ['BUNDLES', bundleStat, 'ok'],
+        ['IG TODAY', igStat, ig.configured ? 'ok' : ''],
         ['PUBLISHED', counts.published ?? '-', 'ok'],
         ['FAILED', failed, failed > 0 ? 'err' : ''],
       ];
@@ -503,7 +605,7 @@ def _html_page() -> str:
       document.getElementById('tab-count-bundles').textContent = `[${ac.bundles ?? 0}]`;
 
       renderCards(art.cards || []);
-      renderBundles(art.bundles || [], ac);
+      renderBundles(art.bundles || [], ac, ig);
       renderLogs(data);
     }
 
@@ -599,6 +701,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._respond(404, b"not found", "text/plain")
 
+    def do_POST(self) -> None:  # noqa: N802
+        path = unquote(self.path.split("?", 1)[0])
+        if path != "/api/instagram/post":
+            self._respond(404, b"not found", "text/plain")
+            return
+
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length <= 0 or length > 65536:
+            self._respond(400, b'{"ok":false,"error":"invalid body"}', "application/json; charset=utf-8")
+            return
+
+        try:
+            body = self.rfile.read(length)
+            payload = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._respond(400, b'{"ok":false,"error":"invalid json"}', "application/json; charset=utf-8")
+            return
+
+        bundle_id = str(payload.get("bundle_id", "")).strip()
+        result = post_bundle_to_instagram(bundle_id)
+        code = 200 if result.get("ok") else 422
+        response = json.dumps(result, ensure_ascii=False, default=str).encode("utf-8")
+        self._respond(code, response, "application/json; charset=utf-8")
 
     def _respond_sse(self) -> None:
         self.send_response(200)
