@@ -2,19 +2,24 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 WIDTH = 1080
 HEIGHT = 1350
 CARD_EXT = "jpg"
 MARGIN_X = 60
 CONTENT_WIDTH = WIDTH - MARGIN_X * 2
-FOOTER_TOP = HEIGHT - 140
-BG_COLOR = (15, 17, 23)
-ACCENT = (99, 179, 237)
-TEXT_PRIMARY = (240, 244, 248)
-TEXT_SECONDARY = (160, 174, 192)
-BADGE_BG = (30, 41, 59)
+BG_COLOR = (11, 14, 22)
+ACCENT = (110, 192, 255)
+ACCENT_ALT = (164, 232, 223)
+TEXT_PRIMARY = (245, 247, 250)
+TEXT_SECONDARY = (173, 181, 193)
+TEXT_TERTIARY = (124, 134, 149)
+PANEL_FILL = (17, 22, 32, 228)
+PANEL_SOFT = (20, 26, 38, 200)
+PANEL_STROKE = (255, 255, 255, 22)
+DIVIDER = (255, 255, 255, 18)
+CHARACTER_SAFE_LEFT = 730
 ELLIPSIS = "…"
 
 FONT_PATHS = [
@@ -129,83 +134,268 @@ def _draw_lines(
     return y
 
 
+def _lerp(a: int, b: int, t: float) -> int:
+    return int(a + (b - a) * t)
+
+
+def _blend(c1: tuple[int, int, int], c2: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    return tuple(_lerp(c1[i], c2[i], t) for i in range(3))
+
+
+def _draw_gradient(img: Image.Image, top: tuple[int, int, int], bottom: tuple[int, int, int]) -> None:
+    px = img.load()
+    for y in range(HEIGHT):
+        t = y / max(1, HEIGHT - 1)
+        row = _blend(top, bottom, t)
+        for x in range(WIDTH):
+            px[x, y] = (*row, 255)
+
+
+def _draw_glow(
+    img: Image.Image,
+    bbox: tuple[int, int, int, int],
+    color: tuple[int, int, int, int],
+    *,
+    blur: int = 60,
+) -> None:
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    od.ellipse(bbox, fill=color)
+    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=blur))
+    img.alpha_composite(overlay)
+
+
+def _draw_panel(
+    img: Image.Image,
+    bbox: tuple[int, int, int, int],
+    *,
+    radius: int = 36,
+    fill: tuple[int, int, int, int] = PANEL_FILL,
+    outline: tuple[int, int, int, int] = PANEL_STROKE,
+    width: int = 2,
+) -> None:
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    od.rounded_rectangle(bbox, radius=radius, fill=fill, outline=outline, width=width)
+    img.alpha_composite(overlay)
+
+
+def _draw_line(
+    draw: ImageDraw.ImageDraw,
+    *,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    fill: tuple[int, int, int, int] | tuple[int, int, int],
+    width: int = 2,
+) -> None:
+    draw.line((x1, y1, x2, y2), fill=fill, width=width)
+
+
+def _draw_chip(
+    draw: ImageDraw.ImageDraw,
+    *,
+    x: int,
+    y: int,
+    text: str,
+    font: ImageFont.ImageFont,
+    fill: tuple[int, int, int, int],
+    text_fill: tuple[int, int, int],
+    outline: tuple[int, int, int, int] | None = None,
+    pad_x: int = 22,
+    pad_y: int = 14,
+    radius: int = 24,
+) -> tuple[int, int, int, int]:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    w = bbox[2] - bbox[0] + pad_x * 2
+    h = bbox[3] - bbox[1] + pad_y * 2
+    shape = (x, y, x + w, y + h)
+    draw.rounded_rectangle(shape, radius=radius, fill=fill, outline=outline)
+    draw.text((x + pad_x, y + pad_y - bbox[1]), text, font=font, fill=text_fill)
+    return shape
+
+
+def _draw_character(img: Image.Image, *, x: int, y: int) -> None:
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(overlay)
+
+    d.ellipse((x + 56, y + 308, x + 286, y + 352), fill=(4, 8, 16, 64))
+
+    d.rounded_rectangle((x + 102, y + 142, x + 250, y + 316), radius=48, fill=(232, 239, 248, 255))
+    d.rounded_rectangle((x + 118, y + 158, x + 234, y + 246), radius=30, fill=(32, 40, 60, 255))
+    d.rounded_rectangle((x + 128, y + 268, x + 172, y + 338), radius=22, fill=(232, 239, 248, 255))
+    d.rounded_rectangle((x + 180, y + 268, x + 224, y + 338), radius=22, fill=(232, 239, 248, 255))
+
+    d.rounded_rectangle((x + 68, y + 8, x + 286, y + 182), radius=54, fill=(241, 245, 251, 255))
+    d.rounded_rectangle((x + 92, y + 34, x + 262, y + 138), radius=30, fill=(24, 30, 48, 255))
+
+    d.line((x + 176, y - 8, x + 176, y + 12), fill=(175, 220, 255, 180), width=8)
+    d.ellipse((x + 158, y - 28, x + 194, y + 8), fill=(*ACCENT, 255))
+    d.ellipse((x + 122, y + 66, x + 158, y + 102), fill=(*ACCENT_ALT, 255))
+    d.ellipse((x + 194, y + 66, x + 230, y + 102), fill=(*ACCENT, 255))
+    d.rounded_rectangle((x + 136, y + 118, x + 218, y + 130), radius=6, fill=(228, 233, 241, 230))
+
+    d.polygon([(x + 52, y + 222), (x + 84, y + 238), (x + 66, y + 266)], fill=(*ACCENT_ALT, 220))
+    d.polygon([(x + 304, y + 204), (x + 278, y + 226), (x + 298, y + 248)], fill=(*ACCENT, 220))
+
+    img.alpha_composite(overlay)
+
+
+def _draw_bullet_card(
+    img: Image.Image,
+    *,
+    x: int,
+    y: int,
+    w: int,
+    title: str,
+    font: ImageFont.ImageFont,
+    num_font: ImageFont.ImageFont,
+    index: int,
+) -> int:
+    draw = ImageDraw.Draw(img)
+    lines = _wrap_text(title, font, w - 116, draw, max_lines=2)
+    line_height = 32
+    body_h = max(84, 28 + len(lines) * line_height)
+    _draw_panel(img, (x, y, x + w, y + body_h), radius=26, fill=PANEL_SOFT, outline=(255, 255, 255, 18), width=1)
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle((x + 18, y + 16, x + 72, y + 70), radius=16, fill=(255, 255, 255, 22))
+    idx_text = f"{index:02d}"
+    idx_box = draw.textbbox((0, 0), idx_text, font=num_font)
+    tx = x + 45 - (idx_box[2] - idx_box[0]) / 2
+    ty = y + 43 - (idx_box[3] - idx_box[1]) / 2 - idx_box[1]
+    draw.text((tx, ty), idx_text, font=num_font, fill=ACCENT)
+    _draw_lines(
+        draw,
+        lines,
+        x=x + 90,
+        y=y + 22,
+        font=font,
+        color=TEXT_PRIMARY,
+        line_height=line_height,
+        max_y=y + body_h - 16,
+    )
+    return y + body_h
+
+
 def generate_card_jpeg(post: dict[str, Any], summary: dict[str, Any]) -> bytes:
-    img = Image.new("RGB", (WIDTH, HEIGHT), BG_COLOR)
+    img = Image.new("RGBA", (WIDTH, HEIGHT), (*BG_COLOR, 255))
+    _draw_gradient(img, (13, 17, 25), (18, 23, 32))
+    _draw_glow(img, (-120, -120, 420, 360), (110, 192, 255, 34), blur=90)
+    _draw_glow(img, (710, 840, 1120, 1260), (164, 232, 223, 28), blur=110)
     draw = ImageDraw.Draw(img)
 
-    font_title = _load_font(48, bold=True)
-    font_sub = _load_font(30)
-    font_label = _load_font(28)
-    font_bullet = _load_font(32)
-    font_meta = _load_font(24)
+    font_title = _load_font(60, bold=True)
+    font_sub = _load_font(28)
+    font_label = _load_font(20, bold=True)
+    font_bullet = _load_font(28)
+    font_meta = _load_font(22)
     font_brand = _load_font(28, bold=True)
+    font_chip = _load_font(20, bold=True)
+    font_impact = _load_font(34, bold=True)
+    font_index = _load_font(24, bold=True)
 
-    draw.rectangle([(0, 0), (WIDTH, 8)], fill=ACCENT)
+    _draw_panel(img, (36, 32, WIDTH - 36, HEIGHT - 32), radius=42, fill=(14, 18, 26, 228), outline=PANEL_STROKE, width=1)
+    draw = ImageDraw.Draw(img)
 
-    feed_type = post.get("feed_type", "news").upper()
     category = summary.get("category", "Tech")
-    badge_text = f" {feed_type} · {category} "
-    badge_font = _load_font(22)
-    badge_bbox = draw.textbbox((0, 0), badge_text, font=badge_font)
-    badge_w = badge_bbox[2] - badge_bbox[0] + 24
-    badge_h = badge_bbox[3] - badge_bbox[1] + 16
-    draw.rounded_rectangle([(MARGIN_X, 60), (MARGIN_X + badge_w, 60 + badge_h)], radius=12, fill=BADGE_BG)
-    draw.text((MARGIN_X + 12, 68), badge_text, font=badge_font, fill=ACCENT)
+    badge_text = category
+    _draw_chip(
+        draw,
+        x=MARGIN_X,
+        y=70,
+        text=badge_text,
+        font=font_chip,
+        fill=(255, 255, 255, 18),
+        text_fill=ACCENT,
+        outline=(255, 255, 255, 18),
+    )
 
-    y = 140
+    impact = float(summary.get("impact_score", 0) or 0)
+    diff = str(summary.get("difficulty", "Intermediate")).upper()
+    right_w = 212
+    _draw_panel(img, (WIDTH - MARGIN_X - right_w, 62, WIDTH - MARGIN_X, 156), radius=28, fill=(255, 255, 255, 10), outline=(255, 255, 255, 16), width=1)
+    draw = ImageDraw.Draw(img)
+    draw.text((WIDTH - MARGIN_X - right_w + 24, 82), "IMPACT", font=font_label, fill=TEXT_TERTIARY)
+    draw.text((WIDTH - MARGIN_X - right_w + 24, 106), f"{impact:.1f}", font=font_impact, fill=TEXT_PRIMARY)
+    draw.text((WIDTH - MARGIN_X - right_w + 108, 114), diff, font=font_chip, fill=TEXT_SECONDARY)
+
+    _draw_line(draw, x1=MARGIN_X, y1=188, x2=WIDTH - MARGIN_X, y2=188, fill=DIVIDER, width=2)
+
+    hero_top = 228
+    text_right = min(CHARACTER_SAFE_LEFT, WIDTH - MARGIN_X - 40)
+    draw = ImageDraw.Draw(img)
+
+    y = hero_top
     headline = summary.get("headline", post["title"])
     y = _draw_lines(
         draw,
-        _wrap_text(headline, font_title, CONTENT_WIDTH, draw, max_lines=3),
+        _wrap_text(headline, font_title, text_right - MARGIN_X, draw, max_lines=3),
         x=MARGIN_X,
         y=y,
         font=font_title,
         color=TEXT_PRIMARY,
-        line_height=58,
-        max_y=FOOTER_TOP,
+        line_height=72,
+        max_y=520,
     )
 
-    y += 16
-    draw.text((MARGIN_X, y), "왜 중요한가?", font=font_label, fill=ACCENT)
-    y += 42
+    y += 28
+    draw.text((MARGIN_X, y), "WHY IT MATTERS", font=font_label, fill=ACCENT)
+    y += 34
 
     why = summary.get("why_important", "")
     y = _draw_lines(
         draw,
-        _wrap_text(why, font_sub, CONTENT_WIDTH, draw, max_lines=2),
+        _wrap_text(why, font_sub, text_right - MARGIN_X, draw, max_lines=3),
         x=MARGIN_X,
         y=y,
         font=font_sub,
         color=TEXT_SECONDARY,
-        line_height=40,
-        max_y=FOOTER_TOP,
+        line_height=38,
+        max_y=560,
     )
 
-    y += 20
-    for bullet in summary.get("bullet_points", [])[:3]:
-        if y + 40 > FOOTER_TOP:
-            break
-        bullet_lines = _wrap_text(f"• {bullet}", font_bullet, CONTENT_WIDTH, draw, max_lines=2)
-        y = _draw_lines(
-            draw,
-            bullet_lines,
-            x=MARGIN_X,
-            y=y,
-            font=font_bullet,
-            color=TEXT_PRIMARY,
-            line_height=42,
-            max_y=FOOTER_TOP,
-        )
-        y += 6
+    _draw_line(draw, x1=MARGIN_X, y1=618, x2=text_right, y2=618, fill=DIVIDER, width=2)
 
-    impact = summary.get("impact_score", 0)
-    difficulty = summary.get("difficulty", "")
-    meta = f"Impact {impact:.1f}  ·  {difficulty}"
-    draw.text((MARGIN_X, HEIGHT - 120), meta, font=font_meta, fill=TEXT_SECONDARY)
-    draw.text((MARGIN_X, HEIGHT - 80), "devPulse", font=font_brand, fill=ACCENT)
+    bullet_y = 650
+    draw.text((MARGIN_X, bullet_y), "KEY POINTS", font=font_label, fill=TEXT_TERTIARY)
+    bullet_y += 28
+    bullet_w = text_right - MARGIN_X
+    for idx, bullet in enumerate(summary.get("bullet_points", [])[:3], start=1):
+        bullet_y = _draw_bullet_card(
+            img,
+            x=MARGIN_X,
+            y=bullet_y,
+            w=bullet_w,
+            title=bullet,
+            font=font_bullet,
+            num_font=font_index,
+            index=idx,
+        )
+        bullet_y += 12
+
+    _draw_character(img, x=744, y=842)
+    draw = ImageDraw.Draw(img)
+    draw.text((754, 804), "devPulse", font=font_label, fill=ACCENT)
+    draw.text((754, 830), "Signal over noise", font=font_meta, fill=TEXT_SECONDARY)
+
+    footer_h = 108
+    footer_y = HEIGHT - footer_h - 48
+    _draw_line(draw, x1=MARGIN_X, y1=footer_y - 22, x2=WIDTH - MARGIN_X, y2=footer_y - 22, fill=DIVIDER, width=2)
+    draw = ImageDraw.Draw(img)
+    draw.text((MARGIN_X, footer_y + 8), "devPulse", font=font_brand, fill=TEXT_PRIMARY)
+    draw.text((MARGIN_X, footer_y + 48), f"{category}  /  {diff}", font=font_meta, fill=TEXT_SECONDARY)
+
+    source = str(post.get("source") or post.get("url") or "").replace("https://", "").replace("http://", "")
+    if source:
+        source = _truncate_to_width(source, font_meta, draw, 320)
+    else:
+        source = "geeknews"
+    draw.text((WIDTH - MARGIN_X - 240, footer_y + 8), "source", font=font_meta, fill=TEXT_TERTIARY)
+    draw.text((WIDTH - MARGIN_X - 240, footer_y + 48), source, font=font_meta, fill=TEXT_PRIMARY)
 
     buf = BytesIO()
-    img.save(buf, format="JPEG", quality=92, optimize=True, progressive=False)
+    img.convert("RGB").save(buf, format="JPEG", quality=92, optimize=True, progressive=False)
     return buf.getvalue()
 
 
@@ -223,3 +413,33 @@ def card_path_for_post(cards_dir: Path, post_id: str) -> Path:
     if png.exists():
         return png
     return jpg
+
+
+def ensure_card_file(
+    post: dict[str, Any],
+    cards_dir: Path,
+    *,
+    verbose: bool = False,
+) -> Path:
+    """카드 파일이 없으면 DB 요약으로 재생성."""
+    path = card_path_for_post(cards_dir, post["id"])
+    if path.exists():
+        return path
+
+    summary = post.get("llm_summary") or {}
+    if isinstance(summary, str):
+        import json
+
+        summary = json.loads(summary)
+    if not summary:
+        raise FileNotFoundError(f"카드 없음 & LLM 요약 없음: {post['id']}")
+
+    from pipeline.lib.log import log
+
+    if verbose:
+        log(f"  [{post['id']}] 카드 파일 없음 — 요약으로 재생성")
+    card_bytes = generate_card_jpeg(post, summary)
+    out_path = cards_dir / f"{post['id']}.{CARD_EXT}"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(card_bytes)
+    return out_path

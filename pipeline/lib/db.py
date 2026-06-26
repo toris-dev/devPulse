@@ -137,6 +137,38 @@ def count_posts_by_status(conn) -> dict[str, int]:
     return {row["status"]: row["count"] for row in cur.fetchall()}
 
 
+def find_bundle_by_post_ids(conn, post_ids: list[str]) -> dict[str, Any] | None:
+    """post_ids 집합과 동일한 번들이 이미 있으면 반환."""
+    if not post_ids:
+        return None
+    sorted_ids = sorted(post_ids)
+    cur = conn.execute(
+        """
+        SELECT id, post_ids, video_key, sns_meta, created_at
+        FROM content_bundles
+        WHERE post_ids @> %s::text[] AND post_ids <@ %s::text[]
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (sorted_ids, sorted_ids),
+    )
+    return cur.fetchone()
+
+
+def find_bundle_for_post(conn, post_id: str) -> dict[str, Any] | None:
+    cur = conn.execute(
+        """
+        SELECT id, post_ids, video_key, sns_meta, created_at
+        FROM content_bundles
+        WHERE %s = ANY(post_ids)
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (post_id,),
+    )
+    return cur.fetchone()
+
+
 def update_post_status(
     conn,
     post_id: str,
