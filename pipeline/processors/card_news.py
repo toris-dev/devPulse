@@ -7,7 +7,16 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 WIDTH = 1080
 HEIGHT = 1350
 CARD_EXT = "jpg"
-MARGIN_X = 60
+MARGIN_X = 72
+MARGIN_Y = 48
+PANEL_INSET = 40
+CARD_PAD_X = 28
+CARD_PAD_Y = 22
+BULLET_INDEX_SIZE = 54
+BULLET_INDEX_GAP = 18
+BULLET_ITEM_GAP = 14
+SECTION_GAP = 28
+TEXT_WIDTH_FUDGE = 12
 CONTENT_WIDTH = WIDTH - MARGIN_X * 2
 BG_COLOR = (11, 14, 22)
 ACCENT = (110, 192, 255)
@@ -46,6 +55,15 @@ def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageF
 def _text_width(text: str, font: ImageFont.ImageFont, draw: ImageDraw.ImageDraw) -> int:
     bbox = draw.textbbox((0, 0), text, font=font)
     return bbox[2] - bbox[0]
+
+
+def _font_line_height(font: ImageFont.ImageFont, *, leading: float = 1.38) -> int:
+    ascent, descent = font.getmetrics()
+    return max(1, int((ascent + descent) * leading))
+
+
+def _safe_text_width(max_width: int) -> int:
+    return max(1, max_width - TEXT_WIDTH_FUDGE)
 
 
 def _truncate_to_width(
@@ -254,26 +272,38 @@ def _draw_bullet_card(
     index: int,
 ) -> int:
     draw = ImageDraw.Draw(img)
-    lines = _wrap_text(title, font, w - 116, draw, max_lines=2)
-    line_height = 32
-    body_h = max(84, 28 + len(lines) * line_height)
+    text_x = x + CARD_PAD_X + BULLET_INDEX_SIZE + BULLET_INDEX_GAP
+    text_w = _safe_text_width(w - CARD_PAD_X * 2 - BULLET_INDEX_SIZE - BULLET_INDEX_GAP)
+    lines = _wrap_text(title, font, text_w, draw, max_lines=2)
+    line_height = _font_line_height(font)
+    text_block_h = max(BULLET_INDEX_SIZE, len(lines) * line_height)
+    body_h = CARD_PAD_Y * 2 + text_block_h
+
     _draw_panel(img, (x, y, x + w, y + body_h), radius=26, fill=PANEL_SOFT, outline=(255, 255, 255, 18), width=1)
     draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle((x + 18, y + 16, x + 72, y + 70), radius=16, fill=(255, 255, 255, 22))
+
+    index_x1 = x + CARD_PAD_X
+    index_y1 = y + CARD_PAD_Y + (text_block_h - BULLET_INDEX_SIZE) // 2
+    index_x2 = index_x1 + BULLET_INDEX_SIZE
+    index_y2 = index_y1 + BULLET_INDEX_SIZE
+    draw.rounded_rectangle((index_x1, index_y1, index_x2, index_y2), radius=16, fill=(255, 255, 255, 22))
+
     idx_text = f"{index:02d}"
     idx_box = draw.textbbox((0, 0), idx_text, font=num_font)
-    tx = x + 45 - (idx_box[2] - idx_box[0]) / 2
-    ty = y + 43 - (idx_box[3] - idx_box[1]) / 2 - idx_box[1]
+    tx = index_x1 + (BULLET_INDEX_SIZE - (idx_box[2] - idx_box[0])) / 2
+    ty = index_y1 + (BULLET_INDEX_SIZE - (idx_box[3] - idx_box[1])) / 2 - idx_box[1]
     draw.text((tx, ty), idx_text, font=num_font, fill=ACCENT)
+
+    text_y = y + CARD_PAD_Y + max(0, (text_block_h - len(lines) * line_height) // 2)
     _draw_lines(
         draw,
         lines,
-        x=x + 90,
-        y=y + 22,
+        x=text_x,
+        y=text_y,
         font=font,
         color=TEXT_PRIMARY,
         line_height=line_height,
-        max_y=y + body_h - 16,
+        max_y=y + body_h - CARD_PAD_Y,
     )
     return y + body_h
 
@@ -295,15 +325,23 @@ def generate_card_jpeg(post: dict[str, Any], summary: dict[str, Any]) -> bytes:
     font_impact = _load_font(34, bold=True)
     font_index = _load_font(24, bold=True)
 
-    _draw_panel(img, (36, 32, WIDTH - 36, HEIGHT - 32), radius=42, fill=(14, 18, 26, 228), outline=PANEL_STROKE, width=1)
+    _draw_panel(
+        img,
+        (PANEL_INSET, PANEL_INSET, WIDTH - PANEL_INSET, HEIGHT - PANEL_INSET),
+        radius=42,
+        fill=(14, 18, 26, 228),
+        outline=PANEL_STROKE,
+        width=1,
+    )
     draw = ImageDraw.Draw(img)
 
+    header_y = MARGIN_Y + 24
     category = summary.get("category", "Tech")
     badge_text = category
     _draw_chip(
         draw,
         x=MARGIN_X,
-        y=70,
+        y=header_y,
         text=badge_text,
         font=font_chip,
         fill=(255, 255, 255, 18),
@@ -314,52 +352,66 @@ def generate_card_jpeg(post: dict[str, Any], summary: dict[str, Any]) -> bytes:
     impact = float(summary.get("impact_score", 0) or 0)
     diff = str(summary.get("difficulty", "Intermediate")).upper()
     right_w = 212
-    _draw_panel(img, (WIDTH - MARGIN_X - right_w, 62, WIDTH - MARGIN_X, 156), radius=28, fill=(255, 255, 255, 10), outline=(255, 255, 255, 16), width=1)
+    impact_top = header_y - 8
+    _draw_panel(
+        img,
+        (WIDTH - MARGIN_X - right_w, impact_top, WIDTH - MARGIN_X, impact_top + 94),
+        radius=28,
+        fill=(255, 255, 255, 10),
+        outline=(255, 255, 255, 16),
+        width=1,
+    )
     draw = ImageDraw.Draw(img)
-    draw.text((WIDTH - MARGIN_X - right_w + 24, 82), "IMPACT", font=font_label, fill=TEXT_TERTIARY)
-    draw.text((WIDTH - MARGIN_X - right_w + 24, 106), f"{impact:.1f}", font=font_impact, fill=TEXT_PRIMARY)
-    draw.text((WIDTH - MARGIN_X - right_w + 108, 114), diff, font=font_chip, fill=TEXT_SECONDARY)
+    impact_pad_x = 24
+    draw.text((WIDTH - MARGIN_X - right_w + impact_pad_x, impact_top + 20), "IMPACT", font=font_label, fill=TEXT_TERTIARY)
+    draw.text((WIDTH - MARGIN_X - right_w + impact_pad_x, impact_top + 44), f"{impact:.1f}", font=font_impact, fill=TEXT_PRIMARY)
+    draw.text((WIDTH - MARGIN_X - right_w + 108, impact_top + 52), diff, font=font_chip, fill=TEXT_SECONDARY)
 
-    _draw_line(draw, x1=MARGIN_X, y1=188, x2=WIDTH - MARGIN_X, y2=188, fill=DIVIDER, width=2)
+    divider_y = impact_top + 94 + SECTION_GAP
+    _draw_line(draw, x1=MARGIN_X, y1=divider_y, x2=WIDTH - MARGIN_X, y2=divider_y, fill=DIVIDER, width=2)
 
-    hero_top = 228
-    text_right = min(CHARACTER_SAFE_LEFT, WIDTH - MARGIN_X - 40)
-    draw = ImageDraw.Draw(img)
+    text_right = min(CHARACTER_SAFE_LEFT, WIDTH - MARGIN_X - 32)
+    text_width = _safe_text_width(text_right - MARGIN_X)
+    title_line_height = _font_line_height(font_title, leading=1.28)
+    sub_line_height = _font_line_height(font_sub)
 
-    y = hero_top
+    y = divider_y + SECTION_GAP + 8
     headline = summary.get("headline", post["title"])
+    headline_lines = _wrap_text(headline, font_title, text_width, draw, max_lines=3)
     y = _draw_lines(
         draw,
-        _wrap_text(headline, font_title, text_right - MARGIN_X, draw, max_lines=3),
+        headline_lines,
         x=MARGIN_X,
         y=y,
         font=font_title,
         color=TEXT_PRIMARY,
-        line_height=72,
-        max_y=520,
+        line_height=title_line_height,
+        max_y=y + title_line_height * len(headline_lines),
     )
 
-    y += 28
+    y += SECTION_GAP
     draw.text((MARGIN_X, y), "WHY IT MATTERS", font=font_label, fill=ACCENT)
-    y += 34
+    y += _font_line_height(font_label) + 10
 
     why = summary.get("why_important", "")
+    why_lines = _wrap_text(why, font_sub, text_width, draw, max_lines=3)
     y = _draw_lines(
         draw,
-        _wrap_text(why, font_sub, text_right - MARGIN_X, draw, max_lines=3),
+        why_lines,
         x=MARGIN_X,
         y=y,
         font=font_sub,
         color=TEXT_SECONDARY,
-        line_height=38,
-        max_y=560,
+        line_height=sub_line_height,
+        max_y=y + sub_line_height * len(why_lines),
     )
 
-    _draw_line(draw, x1=MARGIN_X, y1=618, x2=text_right, y2=618, fill=DIVIDER, width=2)
+    key_divider_y = y + SECTION_GAP
+    _draw_line(draw, x1=MARGIN_X, y1=key_divider_y, x2=text_right, y2=key_divider_y, fill=DIVIDER, width=2)
 
-    bullet_y = 650
+    bullet_y = key_divider_y + SECTION_GAP
     draw.text((MARGIN_X, bullet_y), "KEY POINTS", font=font_label, fill=TEXT_TERTIARY)
-    bullet_y += 28
+    bullet_y += _font_line_height(font_label) + 14
     bullet_w = text_right - MARGIN_X
     for idx, bullet in enumerate(summary.get("bullet_points", [])[:3], start=1):
         bullet_y = _draw_bullet_card(
@@ -372,7 +424,7 @@ def generate_card_jpeg(post: dict[str, Any], summary: dict[str, Any]) -> bytes:
             num_font=font_index,
             index=idx,
         )
-        bullet_y += 12
+        bullet_y += BULLET_ITEM_GAP
 
     _draw_character(img, x=744, y=842)
     draw = ImageDraw.Draw(img)
@@ -380,8 +432,8 @@ def generate_card_jpeg(post: dict[str, Any], summary: dict[str, Any]) -> bytes:
     draw.text((754, 830), "Signal over noise", font=font_meta, fill=TEXT_SECONDARY)
 
     footer_h = 108
-    footer_y = HEIGHT - footer_h - 48
-    _draw_line(draw, x1=MARGIN_X, y1=footer_y - 22, x2=WIDTH - MARGIN_X, y2=footer_y - 22, fill=DIVIDER, width=2)
+    footer_y = HEIGHT - footer_h - MARGIN_Y
+    _draw_line(draw, x1=MARGIN_X, y1=footer_y - 28, x2=WIDTH - MARGIN_X, y2=footer_y - 28, fill=DIVIDER, width=2)
     draw = ImageDraw.Draw(img)
     draw.text((MARGIN_X, footer_y + 8), "devPulse", font=font_brand, fill=TEXT_PRIMARY)
     draw.text((MARGIN_X, footer_y + 48), f"{category}  /  {diff}", font=font_meta, fill=TEXT_SECONDARY)
